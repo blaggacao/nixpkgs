@@ -89,9 +89,7 @@ CHAR_TO_KEY = {
     ")": "shift-0x0B",
 }
 
-# Forward references
-log: "Logger"
-machines: "List[Machine]"
+global log, machines, test_script
 
 
 def eprint(*args: object, **kwargs: Any) -> None:
@@ -103,7 +101,6 @@ def make_command(args: list) -> str:
 
 
 def create_vlan(vlan_nr: str) -> Tuple[str, str, "subprocess.Popen[bytes]", Any]:
-    global log
     log.log("starting VDE switch for network {}".format(vlan_nr))
     vde_socket = tempfile.mkdtemp(
         prefix="nixos-test-vde-", suffix="-vde{}.ctl".format(vlan_nr)
@@ -904,29 +901,25 @@ class Machine:
 
 
 def create_machine(args: Dict[str, Any]) -> Machine:
-    global log
     args["log"] = log
     return Machine(args)
 
 
 def start_all() -> None:
-    global machines
     with log.nested("starting all VMs"):
         for machine in machines:
             machine.start()
 
 
 def join_all() -> None:
-    global machines
     with log.nested("waiting for all VMs to finish"):
         for machine in machines:
             machine.wait_for_shutdown()
 
 
 def run_tests(interactive: bool = False) -> None:
-    global machines
     if interactive:
-        ptpython.repl.embed(globals(), locals())
+        ptpython.repl.embed(test_symbols(), {})
     else:
         test_script()
         # TODO: Collect coverage data
@@ -936,12 +929,10 @@ def run_tests(interactive: bool = False) -> None:
 
 
 def serial_stdout_on() -> None:
-    global log
     log._print_serial_logs = True
 
 
 def serial_stdout_off() -> None:
-    global log
     log._print_serial_logs = False
 
 
@@ -974,6 +965,37 @@ def subtest(name: str) -> Iterator[None]:
             raise e
 
     return False
+
+
+def _test_symbols() -> Dict[str, Any]:
+    general_symbols = dict(
+        os=os,
+        log=globals().get("log"),  # extracting those symbol keys
+        machines=globals().get("machines"),  # without being initialized
+        start_all=start_all,
+        create_machine=create_machine,
+        # run_tests=run_tests,
+        # join_all=join_all,
+        test_script=globals().get("test_script"),  # same
+        subtest=subtest,
+        serial_stdout_off=serial_stdout_off,
+        serial_stdout_on=serial_stdout_on,
+    )
+    return general_symbols
+
+
+def test_symbols() -> Dict[str, Any]:
+
+    general_symbols = _test_symbols()
+
+    machine_symbols = {m.name: machines[idx] for idx, m in enumerate(machines)}
+    print(
+        "Available Symbols:\n    "
+        + ", ".join(map(lambda m: m.name, machines))
+        + "\n    -------\n    "
+        + ", ".join(list(general_symbols.keys()))
+    )
+    return {**general_symbols, **machine_symbols}
 
 
 if __name__ == "__main__":
@@ -1015,11 +1037,8 @@ if __name__ == "__main__":
     )
 
     args = arg_parser.parse_args()
-    global test_script
 
-    def test_script() -> None:
-        with log.nested("running the VM test script"):
-            exec(pathlib.Path(args.testscript).read_text())
+    global log, machines, test_script
 
     log = Logger()
 
@@ -1047,6 +1066,10 @@ if __name__ == "__main__":
             for _, _, process, _ in vde_sockets:
                 process.terminate()
         log.close()
+
+    def test_script() -> None:
+        with log.nested("running the VM test script"):
+            exec(pathlib.Path(args.testscript).read_text(), test_symbols(), {})
 
     tic = time.time()
     run_tests(args.interactive)
